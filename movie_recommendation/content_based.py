@@ -2,64 +2,156 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-#read the csv file 
+
+# ==========================================
+# 1. LOAD DATASET
+# ==========================================
+
 df = pd.read_csv("movie_recommendation/processed_movie_data.csv")
 
-#Apply TD-IDF Vectorization
-tfidf = TfidfVectorizer(stop_words = 'english')
-tfidf_matrix = tfidf.fit_transform(df['combined_features'])
-'''
-TfidfVectorizer() creates our TF-IDF converter.
-stop_words="english" removes common English words such as "the", "is", "and".
-fit_transform() learns the vocabulary and converts movie descriptions into numerical vectors.
-'''
-print("TF-IDF Matrix shape:", tfidf_matrix.shape)
+# Handle missing values in text columns
+feature_columns = {
+    "genre": "genre",
+    "description": "description",
+    "director": "director",
+    "actors": "actors"
+}
 
-#calculate cosine similarity
-#For more understanding about cosine similarity, please refer to the following link: https://www.geeksforgeeks.org/dbms/cosine-similarity/
-cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
-print("Cosine similarity created successfully!")
-print("Cosine similarity shape:", cosine_sim.shape)
+for column in feature_columns.values():
+    df[column] = df[column].fillna("").astype(str)
 
-#crete movie title index 
-indices = pd.Series(
-    df.index, 
-    index=df["title"].str.lower().str.strip()
+
+# ==========================================
+# 2. CREATE TF-IDF MATRICES
+# ==========================================
+
+tfidf_matrices = {}
+similarity_matrices = {}
+
+for feature, column in feature_columns.items():
+
+    tfidf = TfidfVectorizer(stop_words="english")
+
+    tfidf_matrix = tfidf.fit_transform(df[column])
+
+    tfidf_matrices[feature] = tfidf_matrix
+
+    similarity_matrices[feature] = cosine_similarity(
+        tfidf_matrix,
+        tfidf_matrix
+    )
+
+    print(f"{feature.capitalize()} similarity matrix created.")
+
+    print(
+        f"Matrix shape: "
+        f"{similarity_matrices[feature].shape}"
+    )
+
+
+# ==========================================
+# 3. FEATURE WEIGHTS
+# ==========================================
+
+weights = {
+    "description": 0.70,
+    "director": 0.15,
+    "actors": 0.15
+}
+
+
+# ==========================================
+# 4. CREATE MOVIE TITLE INDEX
+# ==========================================
+
+df["normalized_title"] = (
+    df["title"]
+    .astype(str)
+    .str.lower()
+    .str.strip()
 )
 
-#Recommendation function
-def recommend_movies(title, num_recommendation =5):
-    
-    title = title.lower()
+indices = pd.Series(
+    df.index,
+    index=df["normalized_title"]
+)
+
+
+# ==========================================
+# 5. RECOMMENDATION FUNCTION
+# ==========================================
+
+def recommend_movies(title, num_recommendations=5):
+
+    title = title.lower().strip()
 
     if title not in indices:
-        return "Movie not found in the dataset. Please check the title and try again."
-    
+        return "Movie not found in the dataset. Please check the title."
+
     idx = indices[title]
+
+    # Handle duplicate movie titles
     if isinstance(idx, pd.Series):
         idx = idx.iloc[0]
-    #Get similarity scores for all movies with the given movie
-    similarity_scores = list(enumerate(cosine_sim[idx]))
 
-    #Sort movies by similarity
+    # Calculate weighted similarity
+    final_scores = sum(
+        weights[feature] * similarity_matrices[feature][idx]
+        for feature in weights
+    )
+
+    # Sort movies by similarity score
+    similarity_scores = list(enumerate(final_scores))
+
     similarity_scores = sorted(
         similarity_scores,
         key=lambda x: x[1],
         reverse=True
     )
 
-    #Get top similar movies (excluding itself)
-    similarity_scores = similarity_scores[1: num_recommendation + 1]
+    # Exclude the input movie itself
+    similarity_scores = [
+        item for item in similarity_scores
+        if item[0] != idx
+    ]
 
-    #Extract movies indices
-    movie_indices = [i[0] for i in similarity_scores]
+    # Select Top-N recommendations
+    top_movies = similarity_scores[:num_recommendations]
 
-    return df["title"].iloc[movie_indices]
+    # Extract movie information
+    movie_indices = [item[0] for item in top_movies]
 
-#test recommendation system
-movie_name = input("Enter a movie name: ")
-recommendations = recommend_movies(movie_name)
+    recommendations = df.iloc[movie_indices][
+        ["title", "genre", "rating", "year"]
+    ].copy()
 
-print("\nRecommended movies based on your input:")
-print(recommendations)
+    recommendations["similarity_score"] = [
+        round(item[1], 4) for item in top_movies
+    ]
 
+    return recommendations.reset_index(drop=True)
+
+
+# ==========================================
+# 6. TEST THE RECOMMENDATION SYSTEM
+# ==========================================
+
+if __name__ == "__main__":
+
+    print("\nIMDb Movie Recommendation System")
+    print("--------------------------------")
+
+    movie_name = input("Enter a movie name: ")
+
+    recommendations = recommend_movies(movie_name)
+
+    print("\nRecommended Movies:")
+
+    if isinstance(recommendations, str):
+        print(recommendations)
+
+    elif recommendations.empty:
+        print("No recommendations found.")
+
+    else:
+        print(recommendations.to_string(index=False))
